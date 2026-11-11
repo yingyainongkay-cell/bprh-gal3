@@ -1,0 +1,185 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:gal3:sovereign:handoff:1",
+  "title": "Sovereign SEOS handoff",
+  "description": "Shared handoff envelope used by the orchestrator to pass a task to the next agent. Aligned with the framework's handoff template (revision 1, M2.2, 2026-11-11). It validates requests only; per-agent result formats are not covered (AGENT_ARCHITECTURE.md, OG-21). Format keywords such as date-time are assertions only if the validator is configured to enforce formats; the enforcement point must enable that.",
+  "$comment": "Sources: framework 'Shared Handoff Schema' template; M2.2 clarification that tenant_id lives in context (declared assumption); closed objects follow the framework rule that handoffs carry a compact structured summary, not chat history. Open gaps: OG-20 (agent identifiers), OG-27 (field semantics and value sets), OG-29 (prompt version has no field).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "parent_task_id",
+    "agent",
+    "next_agent",
+    "action",
+    "priority",
+    "risk_level",
+    "context",
+    "payload",
+    "constraints",
+    "deadline",
+    "callback"
+  ],
+  "definitions": {
+    "agent_id": {
+      "type": "string",
+      "enum": [
+        "guardrail_agent",
+        "orchestrator",
+        "policy_agent",
+        "code_agent",
+        "security_agent",
+        "research_agent",
+        "validator_agent",
+        "human_approval_agent",
+        "audit_agent"
+      ]
+    },
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "string_list": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    }
+  },
+  "properties": {
+    "task_id": {
+      "allOf": [{ "$ref": "#/definitions/non_empty_string" }],
+      "description": "Created by the orchestrator and kept for the whole chain. Format is not defined by the framework (OG-27)."
+    },
+    "parent_task_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "null for a root task. Relationship to the retained task_id is not defined (OG-27)."
+    },
+    "agent": {
+      "allOf": [{ "$ref": "#/definitions/agent_id" }],
+      "description": "The agent issuing this handoff. The sovereign policy only permits the orchestrator."
+    },
+    "next_agent": {
+      "allOf": [{ "$ref": "#/definitions/agent_id" }],
+      "description": "The agent receiving this handoff. Must match the route for the action (see OPA_POLICY.rego)."
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "authorize_generation",
+        "generate_code",
+        "review_security",
+        "research",
+        "validate",
+        "approve",
+        "audit"
+      ],
+      "description": "What the next agent is asked to do. No value exists for the guardrail or orchestrator steps (OG-28)."
+    },
+    "priority": {
+      "allOf": [{ "$ref": "#/definitions/non_empty_string" }],
+      "description": "The framework template shows 'normal'; the value set is not defined (OG-27)."
+    },
+    "risk_level": {
+      "type": "string",
+      "enum": ["low", "medium", "high", "critical"],
+      "description": "Set by the orchestrator on every handoff."
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["user_id", "role", "session_id", "auth_method", "tenant_id"],
+      "properties": {
+        "user_id": { "$ref": "#/definitions/non_empty_string" },
+        "role": { "$ref": "#/definitions/non_empty_string" },
+        "session_id": { "$ref": "#/definitions/non_empty_string" },
+        "auth_method": { "$ref": "#/definitions/non_empty_string" },
+        "tenant_id": {
+          "allOf": [{ "$ref": "#/definitions/non_empty_string" }],
+          "description": "Tenant isolation key; read by the policy as input.context.tenant_id. Declared assumption (M2.2)."
+        }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "description": "Compact structured summary of the task, never the chat history. Per-action payload shapes are not defined, so additional properties are allowed for now (OG-27).",
+      "additionalProperties": true,
+      "properties": {
+        "user_request": {
+          "type": "string",
+          "description": "Redacted or hashed request; raw text must not be carried. For the audit action the policy requires a SHA-256 hash in lowercase hex. How specialists receive the task content itself is open (OG-33)."
+        },
+        "task_type": { "$ref": "#/definitions/non_empty_string" },
+        "language": { "$ref": "#/definitions/non_empty_string" }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_tokens", "temperature", "allowed_tools", "forbidden_actions"],
+      "properties": {
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "temperature": {
+          "type": "number",
+          "minimum": 0,
+          "description": "The framework caps code generation at 0.3; that cap is enforced by the policy, not here."
+        },
+        "allowed_tools": {
+          "allOf": [{ "$ref": "#/definitions/string_list" }],
+          "description": "Must be set on every handoff; an empty list means no tools."
+        },
+        "forbidden_actions": {
+          "allOf": [{ "$ref": "#/definitions/string_list" }],
+          "description": "The template forbids execute_code, network_access and write_file. A side effect absent from this list counts as requested (see OPA_POLICY.rego, OG-26)."
+        }
+      }
+    },
+    "deadline": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$",
+      "description": "RFC 3339 date-time (the template uses UTC with a trailing Z). The pattern enforces the shape even when format checking is off; it does not check calendar validity. Expiry semantics are not defined (OG-27)."
+    },
+    "callback": {
+      "allOf": [{ "$ref": "#/definitions/agent_id" }],
+      "description": "Where the result is returned. The sovereign policy requires the orchestrator."
+    }
+  },
+  "examples": [
+    {
+      "task_id": "task_20261031_001",
+      "parent_task_id": null,
+      "agent": "orchestrator",
+      "next_agent": "policy_agent",
+      "action": "authorize_generation",
+      "priority": "normal",
+      "risk_level": "medium",
+      "context": {
+        "user_id": "alice",
+        "role": "developer",
+        "session_id": "sess-123",
+        "auth_method": "oidc",
+        "tenant_id": "tenant-A"
+      },
+      "payload": {
+        "user_request": "<redacted-or-hashed-user-request>",
+        "task_type": "code_generation",
+        "language": "python"
+      },
+      "constraints": {
+        "max_tokens": 2000,
+        "temperature": 0.2,
+        "allowed_tools": ["static_analysis", "dependency_scan"],
+        "forbidden_actions": ["execute_code", "network_access", "write_file"]
+      },
+      "deadline": "2026-10-31T18:59:59Z",
+      "callback": "orchestrator"
+    }
+  ]
+}
