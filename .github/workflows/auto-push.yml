@@ -1,13 +1,13 @@
 name: Auto Push Governance + Tag
 
 on:
-  workflow_dispatch:   # กด Run workflow ใน GitHub UI ได้
+  workflow_dispatch:
   push:
     branches:
       - main
 
 permissions:
-  contents: write      # จำเป็นสำหรับ push + tag
+  contents: write
 
 jobs:
   push-governance:
@@ -17,25 +17,25 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0              # ดึง history ทั้งหมด (จำเป็นสำหรับ tag)
-          persist-credentials: true   # เก็บ token สำหรับ push
+          fetch-depth: 0
+          persist-credentials: true
 
       - name: Configure Git identity
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Ensure governance files exist
+      - name: Commit existing governance files (if any)
         run: |
-          test -f OWNERS.md || echo "WARN: OWNERS.md missing"
-          test -f MILESTONES.md || echo "WARN: MILESTONES.md missing"
-          test -f DECISIONS.md || echo "WARN: DECISIONS.md missing"
-          test -f PREFLIGHT.md || echo "WARN: PREFLIGHT.md missing"
-          test -f specs/TRUST_ANCHORS.md || echo "WARN: TRUST_ANCHORS.md missing"
+          # เพิ่มเฉพาะไฟล์ที่มีอยู่จริง
+          for f in OWNERS.md MILESTONES.md DECISIONS.md PREFLIGHT.md specs/TRUST_ANCHORS.md; do
+            if [ -f "$f" ]; then
+              git add "$f"
+            else
+              echo "SKIP: $f not found"
+            fi
+          done
 
-      - name: Commit governance files (if changed)
-        run: |
-          git add OWNERS.md MILESTONES.md DECISIONS.md PREFLIGHT.md specs/TRUST_ANCHORS.md
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
