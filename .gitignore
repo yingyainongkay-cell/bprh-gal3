@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+secrets/
+.env
+out/
+*.log
+.coverage
+htmlcov/
+.DS_Store
