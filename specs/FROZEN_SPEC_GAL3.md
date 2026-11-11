@@ -2,8 +2,9 @@
 
 | | |
 |---|---|
-| Milestone | M2 — Spec Freeze |
-| Status | FROZEN. Items in §9 (Open Gaps) are explicitly **not** frozen. |
+| Milestone | M2 — Spec Freeze, amended by M2.1 |
+| Revision | 2 (M2.1 closes OG-01 to OG-06 and OG-09; see §9 and §10) |
+| Status | FROZEN. Items in §9 "Open gaps" are explicitly **not** frozen. |
 | Date | 2026-11-11 |
 | Role | ARCHITECT |
 | Companion files | `THREAT_MODEL.md`, `openapi.yaml` |
@@ -14,7 +15,9 @@
 
 ### 0.1 Source material
 
-This spec is based only on four research files, all accessed 2026-11-11. They were delivered together in a single attachment; the file names below are the ones cited throughout.
+Two kinds of source feed this spec.
+
+**Research files**, all accessed 2026-11-11. They were delivered together in a single attachment; the file names below are the ones cited throughout.
 
 | Short name | File | Covers |
 |---|---|---|
@@ -23,21 +26,24 @@ This spec is based only on four research files, all accessed 2026-11-11. They we
 | CLICKHOUSE | `clickhouse-audit-schema.md` | MergeTree vs ReplacingMergeTree, hash-chain table, TTL, chain-break query, partitions |
 | REDIS | `redis-rate-limit.md` | Token bucket, Lua atomicity, fail-closed/open, FastAPI, throughput |
 
-Citation format: `[file › section]`, for example `[opa-patterns.md › Tenant Isolation Pattern]`.
+**M2.1 decisions**, supplied by the project owner on 2026-11-11 to close specific gaps. They are cited by the gap they close.
+
+Citation formats: `[file › section]` for research, `[M2.1 › OG-nn]` for decisions.
 
 ### 0.2 Statement classes
 
 | Class | Meaning |
 |---|---|
 | **Adopted** | Taken directly from a research file. Cited. |
-| **Derived** | Needed to make the spec complete and follows mechanically from research, with no alternative chosen. Marked *(Derived)*. |
-| **Gap** | Not covered by research. Never filled by assumption. Listed in §9 as `OG-nn` and referenced where it bites. |
+| **Decided** | An explicit M2.1 decision. Cited. |
+| **Derived** | Needed to make the spec complete and follows mechanically from research or decisions, with no alternative chosen. Marked *(Derived)*. Every rev-2 derivation is listed in §10.2 so it can be vetoed. |
+| **Gap** | Not covered. Never filled by assumption. Listed in §9 as `OG-nn` and referenced where it bites. |
 
 ### 0.3 Freeze rules
 
-1. No new design decisions. Where research is silent, the spec says so and points to §9.
+1. No new design decisions beyond research and M2.1. Where both are silent, the spec says so and points to §9.
 2. No code. Policies, schemas and algorithms are specified as tables and prose. Snippets in the research files are referenced by section, not reproduced, and OG-10 records where they must not be treated as normative.
-3. Self-contained. Everything needed to read this spec is in this spec; the research files are cited for provenance, not required to understand it.
+3. Self-contained, with one stated exception: public signing keys live in the file `specs/TRUST_ANCHORS.md` [M2.1 › OG-04], which is operationally external to this document (OG-15).
 
 ---
 
@@ -45,20 +51,21 @@ Citation format: `[file › section]`, for example `[opa-patterns.md › Tenant 
 
 ### 1.1 Purpose
 
-The research does not state a business purpose for GAL-3 (OG-12). What the research does define is a service composed of four capabilities:
+The sources do not state a business purpose for GAL-3 (OG-12). What they define is a service composed of four capabilities:
 
-1. **Tenant-isolated authorization**, decided by OPA policy with default deny. [opa-patterns.md › Allow/Deny Pattern, Tenant Isolation Pattern]
-2. **Tamper-evident audit logging**, stored as an append-only, hash-chained ClickHouse table. [clickhouse-audit-schema.md › Hash-Chain Audit Table]
-3. **Ed25519 signing and verification** per RFC 8032 using PyNaCl. [ed25519-rfc8032.md › PyNaCl API]
+1. **Tenant-isolated authorization**, decided by OPA policy with default deny, on identity taken from an EdDSA-signed JWT. [opa-patterns.md › Allow/Deny Pattern, Tenant Isolation Pattern; M2.1 › OG-06]
+2. **Tamper-evident audit logging**, stored as an append-only ClickHouse table with one hash chain per tenant. [clickhouse-audit-schema.md › Hash-Chain Audit Table; M2.1 › OG-01]
+3. **Ed25519 signing and verification** per RFC 8032, with the private key held off-service. [ed25519-rfc8032.md › PyNaCl API; M2.1 › OG-04]
 4. **Rate limiting**, using a Redis token bucket updated atomically by a Lua script. [redis-rate-limit.md › Lua Script for Atomic Token Bucket]
 
 ### 1.2 Scope
 
-| In scope | Out of scope (not covered by research) |
+| In scope | Out of scope (not covered) |
 |---|---|
-| Authorization policy contract and tenant-isolation rules | Authentication mechanism and identity provider (OG-06) |
-| Audit table, hash-chain rules, retention | Business domain resources beyond the four capabilities (OG-12) |
-| Token-bucket algorithm and failure modes | Key management for signing (OG-04) |
+| JWT identity mapping and authorization policy contract | Token issuance, validation details, JWT key distribution (OG-17) |
+| Per-tenant audit table, hash-chain rules, retention | Business domain resources beyond the four capabilities (OG-12) |
+| Key custody model, versioning, public-key registry, signed-content format | The interface to the signing authority and registry operations (OG-14, OG-15) |
+| Token-bucket algorithm and failure-mode classification | Replay-protection policy (OG-16) |
 | Sign and verify flow | Deployment topology, HA, TLS, observability (OG-13) |
 | REST contract exposing the four capabilities | Pagination, API versioning policy, error-body standard (OG-12) |
 
@@ -66,12 +73,11 @@ The research does not state a business purpose for GAL-3 (OG-12). What the resea
 
 | Actor | Description | Basis |
 |---|---|---|
-| Tenant admin | Authenticated user with `role` = `admin`, belonging to one tenant (`user.tenant_id`). The only role the research authorizes. | [opa-patterns.md › Allow/Deny Pattern] |
+| Tenant admin | Authenticated user with `role` = `admin`, belonging to one tenant (`user.tenant_id`). The only role the policy authorizes. | [opa-patterns.md › Allow/Deny Pattern] |
 | Other tenant user | Authenticated user with any other role value. Denied by default. | [opa-patterns.md › Allow/Deny Pattern] (default deny) |
 | Cross-tenant caller | Authenticated user whose `tenant_id` differs from the resource's. Always denied, with a reason message. | [opa-patterns.md › Tenant Isolation Pattern] |
+| HRA | External signing authority. Holds the Ed25519 private key; it is not part of the API service. The acronym is used as supplied and is not expanded in the source material. | [M2.1 › OG-04] |
 | Operator / CI | Runs policy checks and tests in the pipeline. Not a runtime role. | [opa-patterns.md › OPA and Rego v1] |
-
-How callers authenticate is not specified (OG-06).
 
 ### 1.4 Components
 
@@ -80,18 +86,21 @@ How callers authenticate is not specified (OG-06).
 | API service | Hosts the REST endpoints; Python, with FastAPI middleware or dependencies | [redis-rate-limit.md › FastAPI Implementation]; PyNaCl is a Python library [ed25519-rfc8032.md] |
 | OPA | Policy decision point; package `authz`, Rego v1 | [opa-patterns.md] |
 | ClickHouse | Audit store; table `audit_log` | [clickhouse-audit-schema.md] |
+| Per-tenant append serializer | Lock or queue that serializes audit appends for each tenant; mechanism not chosen (OG-18) | [M2.1 › OG-02] |
 | Redis | Rate-limit state store; Lua script executed with `EVAL` | [redis-rate-limit.md] |
-| PyNaCl | Ed25519 signing and verification library | [ed25519-rfc8032.md › PyNaCl API] |
+| HRA | Produces Ed25519 signatures with the off-service private key (interface: OG-14) | [M2.1 › OG-04] |
+| Trust anchors registry | File `specs/TRUST_ANCHORS.md` holding public keys by `key_id` (operation: OG-15) | [M2.1 › OG-04] |
+| PyNaCl | Ed25519 verification in the API service | [ed25519-rfc8032.md › PyNaCl API] |
 
 ### 1.5 Request processing order *(Derived)*
 
-1. The caller sends a request; the caller's identity is mapped to the OPA `input.user` object (mechanism: OG-06).
+1. The caller sends a request with a JWT. The token is verified (§4.1) and its claims become `input.user` for OPA.
 2. The rate-limit check runs before the handler. [redis-rate-limit.md › FastAPI Implementation]
 3. The authorization decision is requested from OPA; anything other than `allow = true` is a denial (default deny).
 4. The handler runs (audit append, audit query, chain verification, sign, or verify).
 5. The response is returned.
 
-Steps 2 and 3 must both succeed before step 4. Their relative order is not specified by research (OG-13).
+Steps 2 and 3 must both succeed before step 4. Their relative order is not specified (OG-13).
 
 ---
 
@@ -101,18 +110,20 @@ The research defines capabilities, not endpoints. The inventory below is the **m
 
 ### 2.1 Endpoint inventory
 
-| ID | Method | Path | Capability | Success | Research basis |
-|---|---|---|---|---|---|
-| A1 | POST | `/v1/audit/events` | Append an audit event to the hash chain | 201 | [clickhouse-audit-schema.md › Hash-Chain Audit Table] |
-| A2 | GET | `/v1/audit/events` | Read audit events in a time range | 200 | [clickhouse-audit-schema.md › Partition Strategy] (time-range queries) |
-| A3 | GET | `/v1/audit/chain/verification` | Detect hash-chain breaks in a time range | 200 | [clickhouse-audit-schema.md › Query Pattern: Detect Chain Break] |
-| S1 | POST | `/v1/signatures/sign` | Sign a message with Ed25519 | 200 | [ed25519-rfc8032.md › PyNaCl API] |
-| S2 | POST | `/v1/signatures/verify` | Verify an Ed25519 signature | 200 | [ed25519-rfc8032.md › PyNaCl API] |
+| ID | Method | Path | Capability | Success | Rate-limit failure mode | Basis |
+|---|---|---|---|---|---|---|
+| A1 | POST | `/v1/audit/events` | Append an audit event to the caller's tenant chain | 201 | **Fail-closed** (critical) | [clickhouse-audit-schema.md › Hash-Chain Audit Table]; [M2.1 › OG-09] |
+| A2 | GET | `/v1/audit/events` | Read the caller's tenant audit events in a time range | 200 | **Fail-open** (non-critical) | [clickhouse-audit-schema.md › Partition Strategy]; [M2.1 › OG-09] |
+| A3 | GET | `/v1/audit/chain/verification` | Check the caller's tenant chain in a time range | 200 | **Fail-open** (non-critical) | [clickhouse-audit-schema.md › Query Pattern: Detect Chain Break]; [M2.1 › OG-09] |
+| S1 | POST | `/v1/signatures/sign` | Sign a message with Ed25519 | 200 | **Fail-closed** (critical) | [ed25519-rfc8032.md › PyNaCl API]; [M2.1 › OG-04, OG-09] |
+| S2 | POST | `/v1/signatures/verify` | Verify an Ed25519 signature against a registered key | 200 | **Fail-closed** (critical) | [ed25519-rfc8032.md › PyNaCl API]; [M2.1 › OG-04, OG-09] |
 
 Cross-cutting rules for every endpoint:
 
+- **Authentication:** a valid JWT is required (§4.1).
 - **Authorization:** the OPA decision must be `allow = true` (§4.7).
-- **Rate limiting:** a token is consumed per request (§5). The failure mode when Redis is unavailable is **unassigned** per endpoint (OG-09).
+- **Rate limiting:** a token is consumed per request (§5). The failure mode is the one in the table above.
+- **Tenant scoping** *(Derived)*: all audit operations act on the caller's own tenant, taken from `user.tenant_id`. No audit operation has a tenant parameter, and request bodies never carry `tenant_id`.
 
 ### 2.2 Request and response schemas
 
@@ -122,10 +133,12 @@ Cross-cutting rules for every endpoint:
 |---|---|---|---|
 | Request | `action` | string | Maps to `audit_log.action` |
 | Request | `payload` | string | Maps to `audit_log.payload`; opaque string, content format not specified (OG-12) |
-| Response 201 | `ts` | date-time | Server-assigned |
-| Response 201 | `actor` | string | Populated from the authenticated principal *(Derived)*; identifier not specified (OG-06) |
+| Response 201 | `tenant_id` | string | The caller's tenant |
+| Response 201 | `sequence` | integer ≥ 0 | Assigned by the server; monotonic per tenant (§3.3) |
+| Response 201 | `ts` | date-time | Server-assigned. JSON form used for hashing: OG-19 |
+| Response 201 | `actor` | string | The JWT `sub` claim *(Derived)* |
 | Response 201 | `action`, `payload` | string | Echo of stored values |
-| Response 201 | `prev_hash`, `hash` | string, exactly 64 chars | Chain linkage; computation not specified (OG-03) |
+| Response 201 | `prev_hash`, `hash` | string, 64 lowercase hex chars | Chain linkage (§3.3) |
 
 **A2 — GET `/v1/audit/events`**
 
@@ -133,47 +146,52 @@ Cross-cutting rules for every endpoint:
 |---|---|---|---|
 | Query | `from` | date-time, required | Range start, inclusive (provisional, OG-12) |
 | Query | `to` | date-time, required | Range end, exclusive (provisional, OG-12) |
-| Response 200 | `events` | array of audit event | Same fields as the A1 response. Tenant scoping of results is unresolved (OG-01). |
+| Response 200 | `events` | array of audit event | Same fields as the A1 response; caller's tenant only; ordered by `sequence` *(Derived)* |
 
 **A3 — GET `/v1/audit/chain/verification`**
 
 | Direction | Field | Type | Notes |
 |---|---|---|---|
-| Query | `from`, `to` | date-time, required | As A2. The predecessor of the first row in range is the latest row before `from`. |
+| Query | `from`, `to` | date-time, required | As A2. The predecessor of the first row in range is the row with the next lower `sequence` in the same tenant chain, wherever it falls in time. |
 | Response 200 | `intact` | boolean | `true` when `breaks` is empty *(Derived)* |
-| Response 200 | `breaks` | array | One item per row whose `prev_hash` differs from the preceding row's `hash` |
-| Response 200 | `breaks[].ts`, `.actor`, `.prev_hash`, `.hash` | as stored | The four columns the research query returns |
+| Response 200 | `breaks` | array | One item per row failing a chain check (§3.3, rule C6) |
+| Response 200 | `breaks[].sequence`, `.ts`, `.actor`, `.prev_hash`, `.hash` | as stored | The research query's four columns plus `sequence`, which now locates the row *(Derived)* |
+| Response 200 | `breaks[].reason` | `prev_hash_mismatch` or `hash_mismatch` | Which check failed *(Derived; values provisional, OG-12)* |
 
 **S1 — POST `/v1/signatures/sign`**
 
 | Direction | Field | Type | Notes |
 |---|---|---|---|
-| Request | `message` | string | Encoding not decided (OG-05) |
-| Response 200 | `signature` | string | 64 raw bytes before encoding; fixed length per research. Encoding: OG-05 |
-| Response 200 | `public_key` | string | The verify key matching the signing key *(Derived)*; identification scheme: OG-04 |
+| Request | `message` | string | Carried as a JSON string inside the signed content (§6.4) |
+| Response 200 | `signature` | string, 128 lowercase hex chars | 64-byte Ed25519 signature, hex-encoded [M2.1 › OG-05] |
+| Response 200 | `key_id` | string | Version of the key that signed (§6.2) |
+| Response 200 | `nonce` | string | UUID v4 generated at signing time *(Derived: the verifier needs it to rebuild the signed content)* |
+| Response 200 | `timestamp` | string | ISO 8601 time generated at signing time *(Derived, same reason)*; carried verbatim |
 
 **S2 — POST `/v1/signatures/verify`**
 
 | Direction | Field | Type | Notes |
 |---|---|---|---|
-| Request | `message` | string | Same encoding as S1 |
-| Request | `signature` | string | Same encoding as S1 |
-| Request | `public_key` | string | The verify key to check against *(Derived: verification needs message, signature and verify key)* |
-| Response 200 | `valid` | boolean | `false` when the library reports a bad signature *(Derived from the BadSignatureError behavior)* |
+| Request | `message` | string | As signed |
+| Request | `nonce` | string | As returned by S1 |
+| Request | `timestamp` | string | As returned by S1, verbatim |
+| Request | `signature` | string, 128 lowercase hex chars | As returned by S1 |
+| Request | `key_id` | string | Looked up in the trust anchors registry; callers can no longer supply a public key [M2.1 › OG-04] |
+| Response 200 | `valid` | boolean | `false` for a bad signature, and also for an unknown `key_id` *(Derived, provisional: OG-15)* |
 
-Meaning of `valid = true`: the signature is consistent with this message and this key. It says nothing about whether the key is trusted (OG-04).
+Meaning of `valid = true`: the signature is consistent with this message, nonce and timestamp, under a key listed in the registry. It does not say whether the nonce was seen before or whether the timestamp is acceptable (OG-16).
 
 ### 2.3 Error responses
 
-Status codes use standard HTTP semantics. They are **not** from research (OG-12).
+Status codes use standard HTTP semantics. They are **not** from research or M2.1 (OG-12).
 
 | Status | Condition |
 |---|---|
-| 400 | Malformed request |
-| 401 | Caller not identified (OG-06) |
+| 400 | Malformed request, including values that violate the hex or length rules |
+| 401 | Missing or invalid JWT (§4.1) |
 | 403 | OPA decision is not `allow`. May carry the deny message, for example "cross-tenant access denied". [opa-patterns.md › Allow/Deny Pattern] |
 | 429 | Rate limiter returned `allowed = 0`. [redis-rate-limit.md › Lua Script for Atomic Token Bucket] |
-| 503 | Rate-limit store unavailable on an endpoint configured fail-closed. [redis-rate-limit.md › Fail-Closed vs Fail-Open] |
+| 503 | Rate-limit store unavailable on a fail-closed endpoint (A1, S1, S2 only). [redis-rate-limit.md › Fail-Closed vs Fail-Open; M2.1 › OG-09] |
 
 ---
 
@@ -181,21 +199,23 @@ Status codes use standard HTTP semantics. They are **not** from research (OG-12)
 
 ### 3.1 ClickHouse table `audit_log`
 
-| Column | Type | Meaning |
-|---|---|---|
-| `ts` | DateTime | Event time; first ordering key and partition source |
-| `actor` | String | Who performed the action |
-| `action` | String | What was done |
-| `payload` | String | Event detail |
-| `prev_hash` | FixedString(64) | `hash` of the preceding row in the chain |
-| `hash` | FixedString(64) | This row's hash |
+| Column | Type | Meaning | Basis |
+|---|---|---|---|
+| `tenant_id` | String | Tenant that owns the row and its chain | [M2.1 › OG-01] |
+| `sequence` | UInt64 | Position in the tenant's chain; monotonic per tenant | [M2.1 › OG-02] |
+| `ts` | DateTime | Event time | [clickhouse-audit-schema.md] |
+| `actor` | String | Who performed the action (the JWT `sub`) | [clickhouse-audit-schema.md]; [M2.1 › OG-06] |
+| `action` | String | What was done | [clickhouse-audit-schema.md] |
+| `payload` | String | Event detail | [clickhouse-audit-schema.md] |
+| `prev_hash` | FixedString(64) | `hash` of the preceding row in the same tenant chain | [clickhouse-audit-schema.md] |
+| `hash` | FixedString(64) | This row's hash | [clickhouse-audit-schema.md] |
 
 Table parameters [clickhouse-audit-schema.md › Hash-Chain Audit Table, Partition Strategy, TTL Policy]:
 
 | Parameter | Value |
 |---|---|
 | Engine | MergeTree |
-| ORDER BY | `(ts, actor)` |
+| ORDER BY | `(ts, actor)` — unchanged from research; whether to add `tenant_id` and `sequence` is open (OG-18) |
 | PARTITION BY | `toYYYYMM(ts)` (monthly) |
 | TTL | `ts + INTERVAL 7 YEAR` |
 | Setting | `ttl_only_drop_parts = 1` (recommended by research), so expired data is dropped by whole part |
@@ -211,17 +231,17 @@ Table parameters [clickhouse-audit-schema.md › Hash-Chain Audit Table, Partiti
 
 ### 3.3 Hash-chain rules
 
-| Rule | Statement |
-|---|---|
-| C1 | Every row stores `prev_hash` and `hash` to allow tamper detection. |
-| C2 | The chain is intact iff every row's `prev_hash` equals the `hash` of the row immediately before it by `ts`. |
-| C3 | Detection pattern: select rows whose `prev_hash` differs from the `hash` of the latest earlier row; report `ts`, `actor`, `prev_hash`, `hash`. |
-| C4 | Rows are only inserted, never replaced (engine choice, §3.2). |
-| C5 | Expiry happens only through TTL, at part granularity, after 7 years. |
+| Rule | Statement | Basis |
+|---|---|---|
+| C1 | **One chain per tenant.** Rows with different `tenant_id` are never linked. | [M2.1 › OG-01] |
+| C2 | **Ordering.** `sequence` is a `UInt64`, monotonic per tenant, and defines a row's position in its chain. Appends for a tenant are serialized by a per-tenant lock or queue so no two rows of one tenant are computed from the same predecessor. | [M2.1 › OG-02] |
+| C3 | **Hash.** `hash` = SHA-256, written as 64 lowercase hex characters *(hex form Derived from FixedString(64) and a 32-byte digest)*, computed over the JCS (RFC 8785) serialization of an object with exactly these fields: `ts`, `actor`, `action`, `payload`, `prev_hash`. The `hash` column itself is excluded. | [M2.1 › OG-03] |
+| C4 | **First row.** The first row of a tenant chain has `prev_hash` = SHA-256 of the string `GENESIS`, which is `901131d838b17aac0f7885b81e03cbdc9f5157a00343d30ab22083685ed1416a`. | [M2.1 › OG-03] |
+| C5 | **Append-only.** Rows are only inserted, never replaced (engine choice, §3.2). | [clickhouse-audit-schema.md › MergeTree vs ReplacingMergeTree] |
+| C6 | **Verification** *(Derived)*. Per tenant, taking rows in `sequence` order, a row is a break if (a) its `prev_hash` differs from its predecessor's `hash` (or from the genesis value for the first row), or (b) its `hash` differs from the value recomputed under C3. Check (a) is the research's chain-break pattern, reordered by `sequence`; check (b) is added because C3 now makes recomputation possible, and without it a changed row whose stored `hash` was left alone would pass. | [clickhouse-audit-schema.md › Query Pattern: Detect Chain Break]; [M2.1 › OG-03] |
+| C7 | **Expiry.** Rows expire only through TTL, at part granularity, after 7 years. | [clickhouse-audit-schema.md › TTL Policy] |
 
-[clickhouse-audit-schema.md › Hash-Chain Audit Table, Query Pattern: Detect Chain Break, TTL Policy]
-
-Known defects in this model, recorded rather than silently fixed: OG-01 (no tenant column), OG-02 (ordering and concurrent appends), OG-03 (hash definition, first row, post-TTL anchor), OG-11 (enforcing immutability).
+Not settled by the decisions: the JSON form of `ts` used in hashing, the fact that `tenant_id` and `sequence` are not hash inputs, and re-anchoring once TTL removes a chain's oldest rows (OG-19); the lock or queue mechanism, first `sequence` value and recovery after a crash (OG-18); and how the database prevents modification (OG-11).
 
 ### 3.4 Redis rate-limit state
 
@@ -236,25 +256,43 @@ Known defects in this model, recorded rather than silently fixed: OG-01 (no tena
 
 | Document | Content |
 |---|---|
-| Input | `user.tenant_id`, `user.role`, `resource.tenant_id` |
+| Input | `user.tenant_id`, `user.role`, `user.sub` (all from JWT claims), and `resource.tenant_id` |
 | Output | `allow` (boolean, default `false`); `deny` (set of message strings) |
 
-[opa-patterns.md › Allow/Deny Pattern]
+The current rules do not use `user.sub`; it is available for later rules (OG-07). [opa-patterns.md › Allow/Deny Pattern; M2.1 › OG-06]
 
 ### 3.6 Signing data
 
-Inputs and outputs are `message`, `signature` (64 bytes) and the verify key. Nothing is persisted by the research design. Where signing keys live is OG-04.
+| Item | Specification |
+|---|---|
+| Signed content | JCS serialization of `{context, nonce, timestamp, message}` (§6.4) |
+| Signature | 64 bytes, lowercase hex (128 characters) |
+| Key registry record | `key_id`, `created_at`, `public_key` (lowercase hex) |
+
+Nothing else is persisted by this design. [M2.1 › OG-04, OG-05]
 
 ---
 
-## 4. Authorization policy (OPA Rego)
+## 4. Authentication and authorization
 
-### 4.1 Engine and syntax
+### 4.1 Authentication (JWT)
+
+| Item | Specification |
+|---|---|
+| Token | JWT signed with EdDSA using Ed25519 (RFC 8037) |
+| Claims | `tenant_id`, `role`, `sub` |
+| Mapping | Claims map directly to OPA input: `user.tenant_id`, `user.role`, `user.sub` |
+| Algorithm handling | Only EdDSA is accepted; tokens using any other algorithm are rejected *(Derived from the EdDSA decision)* |
+| Failure | Missing or invalid token yields 401 |
+
+[M2.1 › OG-06]; [ed25519-rfc8032.md › JWT with EdDSA vs Ed25519]. Issuer, audience, expiry rules and key distribution are not decided (OG-17).
+
+### 4.2 Engine and syntax
 
 - OPA 1.0; Rego v1 is the default syntax. `if`, `contains` and `in` are built in; `import future.keywords` is not needed. [opa-patterns.md › OPA and Rego v1]
 - Package name: `authz`. [opa-patterns.md › Allow/Deny Pattern]
 
-### 4.2 Rules
+### 4.3 Rules
 
 | ID | Rule | Condition | Result |
 |---|---|---|---|
@@ -265,7 +303,7 @@ Inputs and outputs are `message`, `signature` (64 bytes) and the verify key. Not
 
 [opa-patterns.md › Allow/Deny Pattern, Tenant Isolation Pattern]. The reference Rego for Z1–Z3 is in that file and is adopted unchanged.
 
-### 4.3 Decision matrix
+### 4.4 Decision matrix
 
 | Caller | Same tenant? | Role | `allow` | `deny` |
 |---|---|---|---|---|
@@ -277,13 +315,13 @@ Inputs and outputs are `message`, `signature` (64 bytes) and the verify key. Not
 
 The last row follows from default deny and Rego's treatment of undefined values *(Derived)*.
 
-### 4.4 Consequences of the adopted rules
+### 4.5 Consequences of the adopted rules
 
 1. No role other than `admin` is ever allowed.
 2. The input has no action or method, so the policy cannot distinguish one endpoint from another. Under the frozen policy, every endpoint in §2.1 is reachable only by a same-tenant admin. Finer rules are OG-07.
-3. `deny` is informational: `allow` does not consult it. How the enforcement point consumes `deny` (for example, as a veto) is not specified (OG-07).
+3. `deny` is informational: `allow` does not consult it. How the enforcement point consumes `deny` is not specified (OG-07).
 
-### 4.5 Quality gates
+### 4.6 Quality gates
 
 | Gate | Command | Purpose |
 |---|---|---|
@@ -293,9 +331,9 @@ The last row follows from default deny and Rego's treatment of undefined values 
 
 [opa-patterns.md › OPA and Rego v1, Testing with opa test]
 
-### 4.6 Endpoint binding *(Derived)*
+### 4.7 Endpoint binding *(Derived)*
 
-Every endpoint in §2.1 requires `allow = true`. The source of `resource.tenant_id` for each endpoint cannot currently be defined, because the audit table has no tenant column (OG-01).
+Every endpoint in §2.1 requires `allow = true`. For audit operations, `resource.tenant_id` is the tenant of the chain being accessed, which is the caller's own tenant (§2.1, tenant scoping). It comes from the server-side tenant scope or the stored row, never from request input. For S1 and S2 there is no stored resource; which tenant they are evaluated against is not defined (OG-07).
 
 ---
 
@@ -340,7 +378,14 @@ The read-decide-update sequence runs as a Lua script via `EVAL` so it is atomic 
 | Fail-closed | Deny every request | Safe; low availability |
 | Fail-open | Allow every request | High availability; abuse risk |
 
-Research recommendation: fail-closed for critical endpoints, fail-open for non-critical ones. Which endpoints are critical is **not decided** (OG-09). [redis-rate-limit.md › Fail-Closed vs Fail-Open]
+Research recommendation: fail-closed for critical endpoints, fail-open for non-critical ones. [redis-rate-limit.md › Fail-Closed vs Fail-Open]
+
+Classification, **decided** [M2.1 › OG-09]:
+
+| Class | Endpoints | Mode |
+|---|---|---|
+| Critical | A1, S1, S2 | Fail-closed (503 when Redis is unavailable) |
+| Non-critical | A2, A3 | Fail-open |
 
 ### 5.6 Integration and performance
 
@@ -354,82 +399,162 @@ Research recommendation: fail-closed for critical endpoints, fail-open for non-c
 ### 6.1 Standard and library
 
 - RFC 8032 (EdDSA), January 2017, Proposed Standard; the primary reference for Ed25519. [ed25519-rfc8032.md › RFC 8032 Status]
-- Library: PyNaCl, `nacl.signing`, with `SigningKey` (private) and `VerifyKey` (public); keys are based on a 32-byte seed. [ed25519-rfc8032.md › PyNaCl API]
+- Library for verification in the API service: PyNaCl, `nacl.signing`, with `VerifyKey` (public); keys are based on a 32-byte seed. [ed25519-rfc8032.md › PyNaCl API]
 - Variant: plain Ed25519. The research gives API guidance for no other variant, so the other variants listed in RFC 8032 are out of scope.
 
-### 6.2 Sign flow (S1)
+### 6.2 Key custody and rotation
 
-1. Authorization and rate-limit checks pass (§1.5).
-2. Decode `message` using the single agreed encoding (OG-05).
-3. Sign with the `SigningKey`; the signature is always 64 bytes. [ed25519-rfc8032.md › Common Pitfalls]
-4. Encode the signature with the same encoding and return it with the matching `public_key`.
+| Item | Specification |
+|---|---|
+| Private key | Held by HRA, off-service. The API service never holds it. |
+| Versioning | Each key version has a `key_id` and `created_at` |
+| Rotation | Every 90 days |
+| Active key | New signatures use the newest key version *(Derived from versioned keys)* |
 
-### 6.3 Verify flow (S2)
+[M2.1 › OG-04]. The format of `key_id`, the rotation procedure and handling of retired keys are open (OG-15).
 
-1. Authorization and rate-limit checks pass.
-2. Decode `message`, `signature` and `public_key` using the single agreed encoding.
-3. Reject signatures that are not 64 bytes *(Derived from the fixed length)*.
-4. Verify with the `VerifyKey`, passing both message and signature correctly.
-5. If the library raises BadSignatureError, return `valid = false`; otherwise `valid = true`.
+### 6.3 Key registry
 
-[ed25519-rfc8032.md › PyNaCl API, Common Pitfalls]
+Public keys are published in `specs/TRUST_ANCHORS.md`, one record per key version: `key_id`, `created_at`, `public_key` as lowercase hex. S2 resolves `key_id` against this registry; a caller-supplied public key is no longer accepted. [M2.1 › OG-04]. The file does not exist yet, and how the service loads and trusts it is open (OG-15).
 
-### 6.4 Pitfalls adopted as requirements
+### 6.4 Signed content
+
+The bytes that are signed are the JCS (RFC 8785) serialization of one JSON object with these members:
+
+| Member | Value |
+|---|---|
+| `context` | The constant string `gal3-sign` |
+| `nonce` | A UUID v4 |
+| `timestamp` | An ISO 8601 time string |
+| `message` | The caller's message, as a JSON string |
+
+[M2.1 › OG-05]. `context` is fixed and never sent by callers. `nonce` and `timestamp` are carried verbatim from S1 to S2, so the verifier rebuilds exactly the bytes that were signed.
+
+### 6.5 Sign flow (S1)
+
+1. Authentication, authorization and rate-limit checks pass (§1.5).
+2. The service builds the signed content: fixed `context`, fresh `nonce`, current `timestamp`, and the caller's `message` *(Derived: who builds it; see OG-14)*.
+3. The content is serialized with JCS.
+4. HRA signs those bytes with the current private key; the signature is always 64 bytes. [ed25519-rfc8032.md › Common Pitfalls]. The service-to-HRA interface is open (OG-14).
+5. The service returns the signature as lowercase hex, the `key_id`, the `nonce` and the `timestamp`.
+
+### 6.6 Verify flow (S2)
+
+1. Authentication, authorization and rate-limit checks pass.
+2. Reject requests whose `signature` is not exactly 128 lowercase hex characters (400).
+3. Resolve `key_id` in the registry. If it is not listed, return `valid = false` *(Derived, provisional: OG-15)*.
+4. Decode the signature and the registered public key from hex.
+5. Rebuild the signed content from `message`, `nonce`, `timestamp` and the fixed `context`; serialize with JCS.
+6. Verify with the `VerifyKey`, passing both message and signature correctly. If the library raises BadSignatureError, return `valid = false`; otherwise `valid = true`. [ed25519-rfc8032.md › PyNaCl API, Common Pitfalls]
+7. Checking the nonce for reuse and the timestamp for freshness is not defined (OG-16).
+
+### 6.7 Encoding and pitfalls
 
 | Pitfall | Requirement |
 |---|---|
-| Encoding: hex vs raw bytes | One encoder, stated explicitly and used identically on both sides (value undecided: OG-05) |
-| Padding | None. Unlike RSA, signature length is fixed at 64 bytes |
+| Encoding: hex vs raw bytes | Lowercase hex for `signature` and `public_key`, on both sides [M2.1 › OG-05] |
+| Padding | None. Unlike RSA, signature length is fixed at 64 bytes (128 hex characters) |
 | Verify arguments | Pass message and signature correctly to the verify call |
 
-### 6.5 Conformance
+[ed25519-rfc8032.md › Common Pitfalls]
 
-The implementation must pass the Ed25519 test vectors in RFC 8032 §7.1. [ed25519-rfc8032.md › Test Vectors]
+### 6.8 Conformance
 
-### 6.6 JWT note
-
-If JWTs are used, EdDSA (RFC 8037) with Ed25519 is the research's reference; it is smaller and faster than RS256. Whether JWTs are used at all is undecided (OG-06). [ed25519-rfc8032.md › JWT with EdDSA vs Ed25519]
+Any implementation of Ed25519 operations, including HRA's if it can be tested, must pass the Ed25519 test vectors in RFC 8032 §7.1. [ed25519-rfc8032.md › Test Vectors]
 
 ---
 
 ## 7. Traceability matrix
 
-| Spec section | Research source |
+| Spec section | Source |
 |---|---|
-| §2 A1–A3 | clickhouse-audit-schema.md (Hash-Chain Audit Table; Query Pattern; Partition Strategy) |
-| §2 S1–S2 | ed25519-rfc8032.md (PyNaCl API) |
-| §3.1–3.3 | clickhouse-audit-schema.md (all sections) |
-| §3.4, §5 | redis-rate-limit.md (all sections) |
-| §3.5, §4 | opa-patterns.md (all sections) |
-| §6 | ed25519-rfc8032.md (all sections) |
+| §2 A1–A3 | clickhouse-audit-schema.md (Hash-Chain Audit Table; Query Pattern; Partition Strategy); M2.1 OG-01, OG-02, OG-03, OG-09 |
+| §2 S1–S2 | ed25519-rfc8032.md (PyNaCl API); M2.1 OG-04, OG-05, OG-09 |
+| §3.1–3.3 | clickhouse-audit-schema.md (all sections); M2.1 OG-01, OG-02, OG-03 |
+| §3.4, §5 | redis-rate-limit.md (all sections); M2.1 OG-09 |
+| §3.5, §4 | opa-patterns.md (all sections); M2.1 OG-06 |
+| §3.6, §6 | ed25519-rfc8032.md (all sections); M2.1 OG-04, OG-05 |
 
 ---
 
-## 8. Acceptance checks mandated by research
+## 8. Acceptance checks
+
+From research:
 
 1. `opa check --strict`, `opa fmt --rego-v1` and `opa test ./policies/` pass in CI. [opa-patterns.md]
 2. RFC 8032 §7.1 test vectors pass. [ed25519-rfc8032.md]
-3. The chain-break detection pattern runs against the audit table and reports no breaks on untampered data. [clickhouse-audit-schema.md]
-4. The rate-limit script is atomic and its failure mode matches the assigned class per endpoint. [redis-rate-limit.md]
+3. The chain verification runs against the audit table and reports no breaks on untampered data. [clickhouse-audit-schema.md]
+4. The rate-limit script is atomic and its failure mode matches the class assigned in §5.5. [redis-rate-limit.md]
+
+From M2.1 *(Derived)*:
+
+5. The first row of every tenant chain has `prev_hash` equal to the genesis value in rule C4.
+6. Appending for one tenant never changes another tenant's chain.
+7. A token signed with any algorithm other than EdDSA is rejected with 401.
+8. S2 cannot be made to use a key that is not in the registry.
 
 ---
 
-## 9. Open Gaps
+## 9. Gaps
 
 Severity: **Blocker** means the affected endpoint or capability cannot be implemented correctly or completely without a decision. The "Suggested resolution" column is input for ratification and is **not** part of the frozen content.
 
+### 9.1 Closed by M2.1
+
+| ID | Decision | Applied in |
+|---|---|---|
+| OG-01 | `tenant_id` column added; one chain per tenant | §3.1, §3.3 C1, §2.1 |
+| OG-02 | `sequence` column (UInt64, monotonic per tenant); per-tenant serialized appends | §3.1, §3.3 C2 |
+| OG-03 | SHA-256 over `ts, actor, action, payload, prev_hash`, JCS-serialized; genesis = SHA-256("GENESIS") | §3.3 C3, C4 |
+| OG-04 | HRA holds the private key off-service; versioned keys rotated every 90 days; registry in `specs/TRUST_ANCHORS.md`; S2 takes `key_id` | §6.2, §6.3, §2.2 S1/S2 |
+| OG-05 | Lowercase hex for signature and public key; signed content = JCS of `{context, nonce, timestamp, message}` | §6.4, §6.7 |
+| OG-06 | JWT with EdDSA; claims `tenant_id`, `role`, `sub` mapped to OPA `user.*` | §4.1, §3.5 |
+| OG-09 | A1, S1, S2 fail-closed; A2, A3 fail-open | §2.1, §5.5 |
+
+Leftovers of the closed gaps are carried into OG-14 to OG-19 below.
+
+### 9.2 Open
+
 | ID | Gap | Why it matters | Severity | Suggested resolution |
 |---|---|---|---|---|
-| OG-01 | `audit_log` has no tenant column. | Tenant isolation cannot be enforced at the data layer; `resource.tenant_id` for audit rows has no source; unclear whether the chain is global or per tenant. | Blocker | Add a tenant identifier; decide global vs per-tenant chain. |
-| OG-02 | Chain ordering. `ts` is DateTime (one-second resolution), ordering is `(ts, actor)`, and the research detection query compares strictly earlier `ts`. Concurrent appends are not serialized. | Rows sharing a timestamp make "previous row" ambiguous (false breaks); concurrent writers can fork the chain. | Blocker | Add a monotonic sequence or finer-grained time; serialize appends per chain. |
-| OG-03 | Hash definition: algorithm, which fields are hashed and in what canonical form, text encoding of the 64 characters, the `prev_hash` of the very first row, and how the chain is re-anchored once TTL drops its oldest parts. | Two implementations would produce incompatible chains. | Blocker | Specify all four in a single normative paragraph. |
-| OG-04 | Key management for Ed25519: who holds signing keys, storage, rotation, key identifiers, distribution of public keys, and whether the service should expose a sign endpoint at all. | S1 has no key source; S2 `valid` cannot assert trust. | Blocker | Decide key custody and a key registry before building S1/S2. |
-| OG-05 | What is signed, and the encoding of message, signature and key (hex vs raw/other). Replay protection is not addressed. | Research flags encoding mismatch as a pitfall but picks none. | Blocker | Choose one encoder; define the signed-content structure including context binding. |
-| OG-06 | Authentication and identity: how `user.tenant_id` and `user.role` reach OPA, the identifier used for `actor`, and whether JWT is used (and with which algorithm). | The whole authorization model depends on trusted identity attributes. | Blocker | Decide the authn mechanism; define the claims-to-input mapping. |
-| OG-07 | Role model and policy granularity: only `admin` exists; no action or resource-type dimension; precedence between `allow` and `deny` is undefined. | Non-admins can never act; all endpoints share one rule. | High | Add roles and an action field to input; define `deny` as veto or informational. |
-| OG-08 | Rate-limit parameters and keying: `capacity`, `refill_rate`, `refill_interval` values; subject scheme (tenant, user, IP, endpoint); expiry of idle keys; clock source for caller-supplied `now` across API instances; time unit. | Limits are unenforceable without values; clock skew affects refill math. | High | Assign per-endpoint-class values; key by tenant plus endpoint; use a single time source. |
-| OG-09 | Classification of endpoints as critical or non-critical for fail-closed vs fail-open. | Redis failure behavior is undefined per endpoint. | High | Classify A1, S1, S2 and the rest explicitly. |
-| OG-10 | Research snippets are defective as written. The Lua snippet has indexing errors (for example `tonumber(ARGV)[1]`, `capacity[1]`) and would not run; the chain-break SQL uses a correlated subquery whose support and performance in ClickHouse the research does not validate. | Implementing the snippets verbatim would fail or perform badly. | High | Treat §3.3 and §5.3 as normative; validate and correct the snippets at implementation. |
-| OG-11 | Enforcing immutability. The research relies on the engine choice; it does not cover database privileges, retention locks or backups that prevent modification or deletion. | A privileged actor could still alter data. | High | Define access controls and backup/retention protections for `audit_log`. |
-| OG-12 | Business purpose and domain resources; path and `/v1` naming; range semantics for `from`/`to`; pagination; payload format; error-body shape; HTTP status mapping. | Provisional wording in §2 may change. | Medium | Ratify or amend §2 in the next revision. |
-| OG-13 | Non-functional requirements: relative order of rate limiting and authorization, availability and HA of OPA, ClickHouse and Redis, TLS, deployment, observability and alerting. | Not decidable from research. | Medium | Add an NFR section after the Blockers are closed. |
+| OG-07 | Role model and policy granularity: only `admin` exists; no action or resource-type dimension; precedence between `allow` and `deny` is undefined; the tenant that S1 and S2 are evaluated against is undefined. | Non-admins can never act; all endpoints share one rule. | High | Add roles and an action field to input; define `deny` as veto or informational; bind S1/S2 to the caller's tenant. |
+| OG-08 | Rate-limit parameters and keying: `capacity`, `refill_rate`, `refill_interval` values; subject scheme (tenant, user, IP, endpoint); expiry of idle keys; clock source for caller-supplied `now` across API instances; time unit. | Limits are unenforceable without values; clock skew affects refill math. | High | Assign per-endpoint-class values; key by `tenant_id` plus endpoint; use a single time source. |
+| OG-10 | Research snippets are defective as written. The Lua snippet has indexing errors (for example `tonumber(ARGV)[1]`, `capacity[1]`) and would not run; the chain-break SQL uses a correlated subquery whose support and performance in ClickHouse the research does not validate, and it must be rewritten for per-tenant `sequence` ordering. | Implementing the snippets verbatim would fail or perform badly. | High | Treat §3.3 and §5.3 as normative; validate and correct the snippets at implementation. |
+| OG-11 | Enforcing immutability. The research relies on the engine choice; it does not cover database privileges, retention locks or backups that prevent modification or deletion. | A privileged actor could still alter data, and `sequence` uniqueness is not enforced by the database. | High | Define access controls and backup/retention protections for `audit_log`. |
+| OG-12 | Business purpose and domain resources; path and `/v1` naming; range semantics for `from`/`to`; `breaks[].reason` values; pagination; payload format; error-body shape; HTTP status mapping. | Provisional wording in §2 may change. | Medium | Ratify or amend §2 in the next revision. |
+| OG-13 | Non-functional requirements: relative order of rate limiting and authorization, availability and HA of OPA, ClickHouse, Redis and HRA, TLS, deployment, observability and alerting. | Not decidable from the sources. | Medium | Add an NFR section after the Blockers are closed. |
+| OG-14 | Interface to HRA: how the API service requests a signature (protocol, authentication, timeouts); whether the service or HRA builds the signed content (this spec assumes the service); behavior when HRA is unreachable. | With the key off-service, S1 cannot work until this exists. | Blocker | Specify the HRA request/response contract and its failure behavior. |
+| OG-15 | Trust anchors registry operation: `specs/TRUST_ANCHORS.md` does not exist yet; its record format and `key_id` format; how and when the service loads it; who may change it; handling of retired or revoked keys and of overlap after each 90-day rotation; the response for an unknown `key_id` (provisionally `valid = false`). | S2 trusts whatever the registry says, so its integrity is the trust root. | Blocker | Define format, loading, change control and retirement rules; populate with real keys from HRA. |
+| OG-16 | Replay protection policy: where seen nonces are stored, for how long, and the timestamp tolerance window. S2 currently checks the signature only. | The signed content carries a nonce and timestamp that nothing enforces. | High | Define a nonce store with a TTL matching the tolerance window. |
+| OG-17 | JWT validation and key distribution: token issuer, audience and expiry rules, token lifetime and revocation, where the JWT verification keys come from (and whether they are separate from HRA's), the set of valid `role` values, `sub` format. | Authorization trusts these claims entirely. | Blocker | Define issuer, validation rules and a JWT key source. |
+| OG-18 | Append serialization and sequence mechanics: lock versus queue, its backing store (and its interplay with Redis outages), timeouts and failure behavior, recovery of the chain tail after a crash, first `sequence` value, whether gaps are allowed, and whether `tenant_id` and `sequence` should join the ClickHouse sort key. | A1 correctness and performance depend on it. | High | Choose a mechanism; define tail recovery from the stored chain; decide the first value and gap policy. |
+| OG-19 | Hash input details: the JSON form and precision of `ts` when hashed (the column is one-second DateTime); `tenant_id` and `sequence` are not hash inputs under C3; re-anchoring the chain once TTL removes its oldest rows. | Implementations could hash differently; unhashed fields are not covered by tamper detection. | Medium | Fix a `ts` form; consider hashing `tenant_id` and `sequence`; define a retained anchor value for expired parts. |
+
+---
+
+## 10. Amendment log
+
+### 10.1 Revisions
+
+| Rev | Date | Change |
+|---|---|---|
+| 1 | 2026-11-11 | M2 initial freeze from the four research files. Gaps OG-01 to OG-13 opened. |
+| 2 | 2026-11-11 | M2.1: decisions for OG-01 to OG-06 and OG-09 applied; new gaps OG-14 to OG-19; §4 gained an authentication section; a cross-reference to endpoint binding was corrected (§4.6 became §4.7). |
+
+### 10.2 Derived items introduced in rev 2
+
+These follow from the M2.1 decisions but were not stated in them. Each can be reversed without affecting the decisions.
+
+| Item | Where |
+|---|---|
+| Audit operations act only on the caller's tenant; no tenant parameter | §2.1 |
+| `actor` is the JWT `sub` | §2.2 A1, §3.1 |
+| Chain order and predecessor are defined by `sequence`, not `ts` | §2.2 A3, §3.3 C6 |
+| Verification also recomputes each row's `hash` | §3.3 C6 |
+| Breaks carry `sequence` and a `reason` | §2.2 A3 |
+| Hash values are lowercase hex | §3.3 C3 |
+| Only EdDSA tokens are accepted | §4.1 |
+| The service builds the signed content; S1 returns `nonce` and `timestamp` | §2.2 S1, §6.5 |
+| Unknown `key_id` yields `valid = false` | §2.2 S2, §6.6 |
+| New signatures use the newest key version | §6.2 |
+| A2 and A3 never return 503 for rate-limit reasons | §2.3 |
