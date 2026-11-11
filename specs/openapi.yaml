@@ -1,28 +1,32 @@
 openapi: 3.0.3
 info:
   title: GAL-3 API
-  version: 1.0.0-m2-spec-freeze
+  version: 2.0.0-m2.1
   description: |
-    API contract for GAL-3 (BPRH/SEOS), milestone M2 (spec freeze, 2026-11-11).
-    Companion to FROZEN_SPEC_GAL3.md; section references (for example "§2") and
-    gap identifiers (OG-nn) point into that file.
+    API contract for GAL-3 (BPRH/SEOS), revision 2 (M2 spec freeze amended by M2.1,
+    2026-11-11). Companion to FROZEN_SPEC_GAL3.md rev 2; section references
+    (for example "§2") and gap identifiers (OG-nn) point into that file.
 
-    The research defines four capabilities (authorization, hash-chained audit log,
-    Ed25519 signing, rate limiting), not endpoints. Paths, the /v1 prefix, parameter
-    names, status-code mapping and error body shape are provisional (OG-12). Fields
-    mirror the research schemas wherever one exists.
+    The sources define four capabilities (authorization, per-tenant hash-chained
+    audit log, Ed25519 signing, rate limiting), not endpoints. Paths, the /v1
+    prefix, parameter names, status-code mapping and error body shape are
+    provisional (OG-12). Fields mirror the audit schema and the M2.1 decisions.
 
-    Applies to every operation: the OPA decision must be allow = true (default deny),
-    and a rate-limit token is consumed per request. Failure mode when Redis is
-    unavailable is unassigned per operation (OG-09).
+    Applies to every operation: a valid JWT (EdDSA) is required; the OPA decision
+    must be allow = true (default deny); and a rate-limit token is consumed per
+    request. The failure mode when Redis is unavailable is stated per operation in
+    x-failure-mode (A1, S1, S2 fail-closed; A2, A3 fail-open).
+
+    All audit operations act on the caller's own tenant, taken from the token.
+    No audit operation takes a tenant parameter.
 servers:
   - url: /
     description: Relative to the deployment host. Deployment topology is not specified (OG-13).
 tags:
   - name: Audit
-    description: Hash-chained audit log (clickhouse-audit-schema.md).
+    description: Per-tenant hash-chained audit log.
   - name: Signatures
-    description: Ed25519 sign and verify (ed25519-rfc8032.md).
+    description: Ed25519 sign and verify with registry-resolved keys.
 security:
   - bearerAuth: []
 paths:
@@ -30,13 +34,15 @@ paths:
     post:
       tags: [Audit]
       operationId: appendAuditEvent
-      summary: Append an audit event to the hash chain
+      summary: Append an audit event to the caller's tenant chain
       description: |
-        Adds one row to the append-only audit table. The server assigns ts, takes
-        actor from the authenticated principal, and sets prev_hash and hash.
-        The hash definition is unspecified (OG-03).
-      x-spec-ref: "FROZEN_SPEC_GAL3.md §2 (A1)"
-      x-failure-mode: "unassigned (OG-09)"
+        Adds one row to the append-only audit table. The server takes tenant_id from
+        the token, assigns sequence and ts, sets actor to the token's sub claim, and
+        computes prev_hash and hash (SHA-256 over the JCS serialization of ts, actor,
+        action, payload and prev_hash). Appends are serialized per tenant; the
+        mechanism is unspecified (OG-18).
+      x-spec-ref: "FROZEN_SPEC_GAL3.md §2 (A1), §3.3"
+      x-failure-mode: fail-closed
       requestBody:
         required: true
         content:
@@ -63,12 +69,13 @@ paths:
     get:
       tags: [Audit]
       operationId: listAuditEvents
-      summary: Read audit events in a time range
+      summary: Read the caller's tenant audit events in a time range
       description: |
-        Returns audit rows whose ts falls in the range. Tenant scoping of results
-        is unresolved because the audit table has no tenant column (OG-01).
+        Returns the caller's tenant rows whose ts falls in the range, ordered by
+        sequence. The rate limiter is fail-open on this operation, so it does not
+        return 503 for rate-limit-store outages.
       x-spec-ref: "FROZEN_SPEC_GAL3.md §2 (A2)"
-      x-failure-mode: "unassigned (OG-09)"
+      x-failure-mode: fail-open
       parameters:
         - $ref: '#/components/parameters/From'
         - $ref: '#/components/parameters/To'
@@ -87,20 +94,20 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '429':
           $ref: '#/components/responses/TooManyRequests'
-        '503':
-          $ref: '#/components/responses/ServiceUnavailable'
   /v1/audit/chain/verification:
     get:
       tags: [Audit]
       operationId: verifyAuditChain
-      summary: Detect hash-chain breaks in a time range
+      summary: Check the caller's tenant chain in a time range
       description: |
-        Reports rows whose prev_hash differs from the hash of the row immediately
-        before them by ts. The predecessor of the first row in range is the latest
-        row before `from`. Ordering ambiguity for rows sharing a timestamp is
-        unresolved (OG-02).
-      x-spec-ref: "FROZEN_SPEC_GAL3.md §2 (A3)"
-      x-failure-mode: "unassigned (OG-09)"
+        Walks the tenant chain in sequence order and reports rows that fail either
+        check: prev_hash differs from the predecessor's hash (the genesis value for
+        the first row), or hash differs from the value recomputed from the row's
+        fields. The predecessor of the first row in range is the row with the next
+        lower sequence, wherever it falls in time. The rate limiter is fail-open on
+        this operation, so it does not return 503 for rate-limit-store outages.
+      x-spec-ref: "FROZEN_SPEC_GAL3.md §2 (A3), §3.3 (C6)"
+      x-failure-mode: fail-open
       parameters:
         - $ref: '#/components/parameters/From'
         - $ref: '#/components/parameters/To'
@@ -119,20 +126,20 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '429':
           $ref: '#/components/responses/TooManyRequests'
-        '503':
-          $ref: '#/components/responses/ServiceUnavailable'
   /v1/signatures/sign:
     post:
       tags: [Signatures]
       operationId: signMessage
       summary: Sign a message with Ed25519
       description: |
-        Signs the message with the service's signing key (RFC 8032, PyNaCl). The
-        signature is 64 bytes before encoding. Key custody and identification are
-        unspecified (OG-04); the encoding of message and signature is undecided
-        (OG-05).
-      x-spec-ref: "FROZEN_SPEC_GAL3.md §2 (S1), §6.2"
-      x-failure-mode: "unassigned (OG-09)"
+        The service builds the signed content, the JCS (RFC 8785) serialization of
+        {context, nonce, timestamp, message} with context fixed to "gal3-sign", and
+        obtains an Ed25519 signature over those bytes from the off-service signing
+        authority (HRA) using the current key version. The service-to-HRA interface
+        is unspecified (OG-14). The nonce and timestamp are returned so that the
+        verifier can rebuild the signed content.
+      x-spec-ref: "FROZEN_SPEC_GAL3.md §2 (S1), §6.5"
+      x-failure-mode: fail-closed
       requestBody:
         required: true
         content:
@@ -160,13 +167,16 @@ paths:
     post:
       tags: [Signatures]
       operationId: verifySignature
-      summary: Verify an Ed25519 signature
+      summary: Verify an Ed25519 signature against a registered key
       description: |
-        Checks the signature against the message and the supplied public key.
-        valid = true means the three are mutually consistent; it does not mean the
-        key is trusted (OG-04). An invalid signature yields valid = false.
-      x-spec-ref: "FROZEN_SPEC_GAL3.md §2 (S2), §6.3"
-      x-failure-mode: "unassigned (OG-09)"
+        Looks key_id up in the trust anchors registry (specs/TRUST_ANCHORS.md),
+        rebuilds the signed content from message, nonce, timestamp and the fixed
+        context, and verifies the signature. Callers cannot supply a public key.
+        valid = false for a bad signature and, provisionally, for an unknown key_id
+        (OG-15). valid = true does not imply the nonce is unused or the timestamp
+        acceptable (OG-16).
+      x-spec-ref: "FROZEN_SPEC_GAL3.md §2 (S2), §6.6"
+      x-failure-mode: fail-closed
       requestBody:
         required: true
         content:
@@ -195,9 +205,12 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
+      bearerFormat: JWT
       description: |
-        Caller identity carrying tenant_id and role for the OPA input. The
-        authentication mechanism and token format are not specified (OG-06).
+        JWT signed with EdDSA (Ed25519). Claims: tenant_id, role, sub; they map to the
+        OPA input as user.tenant_id, user.role and user.sub. Tokens using any other
+        algorithm are rejected. Issuer, audience, expiry rules and key distribution
+        are not specified (OG-17).
   parameters:
     From:
       name: from
@@ -216,9 +229,14 @@ components:
         type: string
         format: date-time
   schemas:
+    Sha256Hex:
+      type: string
+      pattern: '^[0-9a-f]{64}$'
+      description: SHA-256 digest as 64 lowercase hex characters (FixedString(64)).
     AuditEventCreate:
       type: object
       required: [action, payload]
+      description: Request body. It never carries tenant_id; the tenant comes from the token.
       properties:
         action:
           type: string
@@ -228,29 +246,34 @@ components:
           description: Event detail. Opaque string; content format not specified (OG-12).
     AuditEvent:
       type: object
-      required: [ts, actor, action, payload, prev_hash, hash]
+      required: [tenant_id, sequence, ts, actor, action, payload, prev_hash, hash]
       properties:
+        tenant_id:
+          type: string
+          description: Tenant that owns the row and its chain. Equals the caller's tenant.
+        sequence:
+          type: integer
+          minimum: 0
+          description: Position in the tenant chain; monotonic per tenant (UInt64). First value unspecified (OG-18).
         ts:
           type: string
           format: date-time
-          description: Server-assigned event time (audit_log.ts).
+          description: Server-assigned event time. JSON form used for hashing is unspecified (OG-19).
         actor:
           type: string
-          description: Authenticated principal (audit_log.actor). Identifier unspecified (OG-06).
+          description: The caller's JWT sub claim.
         action:
           type: string
         payload:
           type: string
         prev_hash:
-          type: string
-          minLength: 64
-          maxLength: 64
-          description: hash of the preceding row in the chain (FixedString(64)).
+          allOf:
+            - $ref: '#/components/schemas/Sha256Hex'
+          description: hash of the preceding row in the tenant chain; for the first row, SHA-256 of "GENESIS" (901131d838b17aac0f7885b81e03cbdc9f5157a00343d30ab22083685ed1416a).
         hash:
-          type: string
-          minLength: 64
-          maxLength: 64
-          description: This row's hash (FixedString(64)). Computation unspecified (OG-03).
+          allOf:
+            - $ref: '#/components/schemas/Sha256Hex'
+          description: SHA-256 over the JCS serialization of ts, actor, action, payload and prev_hash.
     AuditEventList:
       type: object
       required: [events]
@@ -261,22 +284,25 @@ components:
             $ref: '#/components/schemas/AuditEvent'
     ChainBreak:
       type: object
-      required: [ts, actor, prev_hash, hash]
-      description: A row whose prev_hash differs from the hash of the preceding row.
+      required: [sequence, ts, actor, prev_hash, hash, reason]
+      description: A row that failed a chain check.
       properties:
+        sequence:
+          type: integer
+          minimum: 0
         ts:
           type: string
           format: date-time
         actor:
           type: string
         prev_hash:
-          type: string
-          minLength: 64
-          maxLength: 64
+          $ref: '#/components/schemas/Sha256Hex'
         hash:
+          $ref: '#/components/schemas/Sha256Hex'
+        reason:
           type: string
-          minLength: 64
-          maxLength: 64
+          enum: [prev_hash_mismatch, hash_mismatch]
+          description: Which check failed. Values are provisional (OG-12).
     ChainVerificationResult:
       type: object
       required: [intact, breaks]
@@ -294,30 +320,46 @@ components:
       properties:
         message:
           type: string
-          description: Message to sign. Encoding not decided (OG-05).
+          description: Message to sign, carried as a JSON string inside the signed content.
     SignResponse:
       type: object
-      required: [signature, public_key]
+      required: [signature, key_id, nonce, timestamp]
       properties:
         signature:
           type: string
-          description: Ed25519 signature, 64 bytes before encoding. Encoding not decided (OG-05).
-        public_key:
+          pattern: '^[0-9a-f]{128}$'
+          description: Ed25519 signature, 64 bytes as 128 lowercase hex characters.
+        key_id:
           type: string
-          description: Verify key matching the signing key. Identification scheme unspecified (OG-04).
+          description: Version of the signing key; resolvable in the trust anchors registry. Format unspecified (OG-15).
+        nonce:
+          type: string
+          format: uuid
+          description: UUID v4 generated at signing time.
+        timestamp:
+          type: string
+          description: ISO 8601 time generated at signing time. Carried verbatim to the verifier.
     VerifyRequest:
       type: object
-      required: [message, signature, public_key]
+      required: [message, nonce, timestamp, signature, key_id]
       properties:
         message:
           type: string
-          description: Same encoding as the sign endpoint (OG-05).
+          description: The message as signed.
+        nonce:
+          type: string
+          format: uuid
+          description: As returned by the sign endpoint.
+        timestamp:
+          type: string
+          description: As returned by the sign endpoint, verbatim.
         signature:
           type: string
-          description: Same encoding as the sign endpoint; must decode to 64 bytes.
-        public_key:
+          pattern: '^[0-9a-f]{128}$'
+          description: Ed25519 signature as 128 lowercase hex characters.
+        key_id:
           type: string
-          description: Verify key to check against.
+          description: Key version to resolve in the trust anchors registry. Callers cannot supply a public key.
     VerifyResponse:
       type: object
       required: [valid]
@@ -325,8 +367,10 @@ components:
         valid:
           type: boolean
           description: |
-            True when the signature is consistent with message and key. False when
-            the library reports a bad signature. Says nothing about key trust (OG-04).
+            True when the signature is consistent with the message, nonce and
+            timestamp under a registered key. False for a bad signature and,
+            provisionally, for an unknown key_id (OG-15). Says nothing about nonce
+            reuse or timestamp freshness (OG-16).
     Error:
       type: object
       required: [message]
@@ -336,13 +380,13 @@ components:
           type: string
   responses:
     BadRequest:
-      description: Malformed request.
+      description: Malformed request, including values that violate the hex or length rules.
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
     Unauthorized:
-      description: Caller not identified (OG-06).
+      description: Missing or invalid JWT.
       content:
         application/json:
           schema:
@@ -364,7 +408,7 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
     ServiceUnavailable:
-      description: Rate-limit store unavailable on an operation configured fail-closed (OG-09).
+      description: Rate-limit store unavailable on a fail-closed operation (A1, S1, S2).
       content:
         application/json:
           schema:
