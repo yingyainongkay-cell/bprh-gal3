@@ -1,0 +1,371 @@
+openapi: 3.0.3
+info:
+  title: GAL-3 API
+  version: 1.0.0-m2-spec-freeze
+  description: |
+    API contract for GAL-3 (BPRH/SEOS), milestone M2 (spec freeze, 2026-11-11).
+    Companion to FROZEN_SPEC_GAL3.md; section references (for example "§2") and
+    gap identifiers (OG-nn) point into that file.
+
+    The research defines four capabilities (authorization, hash-chained audit log,
+    Ed25519 signing, rate limiting), not endpoints. Paths, the /v1 prefix, parameter
+    names, status-code mapping and error body shape are provisional (OG-12). Fields
+    mirror the research schemas wherever one exists.
+
+    Applies to every operation: the OPA decision must be allow = true (default deny),
+    and a rate-limit token is consumed per request. Failure mode when Redis is
+    unavailable is unassigned per operation (OG-09).
+servers:
+  - url: /
+    description: Relative to the deployment host. Deployment topology is not specified (OG-13).
+tags:
+  - name: Audit
+    description: Hash-chained audit log (clickhouse-audit-schema.md).
+  - name: Signatures
+    description: Ed25519 sign and verify (ed25519-rfc8032.md).
+security:
+  - bearerAuth: []
+paths:
+  /v1/audit/events:
+    post:
+      tags: [Audit]
+      operationId: appendAuditEvent
+      summary: Append an audit event to the hash chain
+      description: |
+        Adds one row to the append-only audit table. The server assigns ts, takes
+        actor from the authenticated principal, and sets prev_hash and hash.
+        The hash definition is unspecified (OG-03).
+      x-spec-ref: "FROZEN_SPEC_GAL3.md §2 (A1)"
+      x-failure-mode: "unassigned (OG-09)"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuditEventCreate'
+      responses:
+        '201':
+          description: Event appended.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditEvent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    get:
+      tags: [Audit]
+      operationId: listAuditEvents
+      summary: Read audit events in a time range
+      description: |
+        Returns audit rows whose ts falls in the range. Tenant scoping of results
+        is unresolved because the audit table has no tenant column (OG-01).
+      x-spec-ref: "FROZEN_SPEC_GAL3.md §2 (A2)"
+      x-failure-mode: "unassigned (OG-09)"
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+      responses:
+        '200':
+          description: Events in range.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditEventList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /v1/audit/chain/verification:
+    get:
+      tags: [Audit]
+      operationId: verifyAuditChain
+      summary: Detect hash-chain breaks in a time range
+      description: |
+        Reports rows whose prev_hash differs from the hash of the row immediately
+        before them by ts. The predecessor of the first row in range is the latest
+        row before `from`. Ordering ambiguity for rows sharing a timestamp is
+        unresolved (OG-02).
+      x-spec-ref: "FROZEN_SPEC_GAL3.md §2 (A3)"
+      x-failure-mode: "unassigned (OG-09)"
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+      responses:
+        '200':
+          description: Verification result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChainVerificationResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /v1/signatures/sign:
+    post:
+      tags: [Signatures]
+      operationId: signMessage
+      summary: Sign a message with Ed25519
+      description: |
+        Signs the message with the service's signing key (RFC 8032, PyNaCl). The
+        signature is 64 bytes before encoding. Key custody and identification are
+        unspecified (OG-04); the encoding of message and signature is undecided
+        (OG-05).
+      x-spec-ref: "FROZEN_SPEC_GAL3.md §2 (S1), §6.2"
+      x-failure-mode: "unassigned (OG-09)"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignRequest'
+      responses:
+        '200':
+          description: Message signed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /v1/signatures/verify:
+    post:
+      tags: [Signatures]
+      operationId: verifySignature
+      summary: Verify an Ed25519 signature
+      description: |
+        Checks the signature against the message and the supplied public key.
+        valid = true means the three are mutually consistent; it does not mean the
+        key is trusted (OG-04). An invalid signature yields valid = false.
+      x-spec-ref: "FROZEN_SPEC_GAL3.md §2 (S2), §6.3"
+      x-failure-mode: "unassigned (OG-09)"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyRequest'
+      responses:
+        '200':
+          description: Verification outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Caller identity carrying tenant_id and role for the OPA input. The
+        authentication mechanism and token format are not specified (OG-06).
+  parameters:
+    From:
+      name: from
+      in: query
+      required: true
+      description: Start of the time range, inclusive (provisional, OG-12).
+      schema:
+        type: string
+        format: date-time
+    To:
+      name: to
+      in: query
+      required: true
+      description: End of the time range, exclusive (provisional, OG-12).
+      schema:
+        type: string
+        format: date-time
+  schemas:
+    AuditEventCreate:
+      type: object
+      required: [action, payload]
+      properties:
+        action:
+          type: string
+          description: What was done. Stored in audit_log.action.
+        payload:
+          type: string
+          description: Event detail. Opaque string; content format not specified (OG-12).
+    AuditEvent:
+      type: object
+      required: [ts, actor, action, payload, prev_hash, hash]
+      properties:
+        ts:
+          type: string
+          format: date-time
+          description: Server-assigned event time (audit_log.ts).
+        actor:
+          type: string
+          description: Authenticated principal (audit_log.actor). Identifier unspecified (OG-06).
+        action:
+          type: string
+        payload:
+          type: string
+        prev_hash:
+          type: string
+          minLength: 64
+          maxLength: 64
+          description: hash of the preceding row in the chain (FixedString(64)).
+        hash:
+          type: string
+          minLength: 64
+          maxLength: 64
+          description: This row's hash (FixedString(64)). Computation unspecified (OG-03).
+    AuditEventList:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEvent'
+    ChainBreak:
+      type: object
+      required: [ts, actor, prev_hash, hash]
+      description: A row whose prev_hash differs from the hash of the preceding row.
+      properties:
+        ts:
+          type: string
+          format: date-time
+        actor:
+          type: string
+        prev_hash:
+          type: string
+          minLength: 64
+          maxLength: 64
+        hash:
+          type: string
+          minLength: 64
+          maxLength: 64
+    ChainVerificationResult:
+      type: object
+      required: [intact, breaks]
+      properties:
+        intact:
+          type: boolean
+          description: True when breaks is empty.
+        breaks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChainBreak'
+    SignRequest:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          description: Message to sign. Encoding not decided (OG-05).
+    SignResponse:
+      type: object
+      required: [signature, public_key]
+      properties:
+        signature:
+          type: string
+          description: Ed25519 signature, 64 bytes before encoding. Encoding not decided (OG-05).
+        public_key:
+          type: string
+          description: Verify key matching the signing key. Identification scheme unspecified (OG-04).
+    VerifyRequest:
+      type: object
+      required: [message, signature, public_key]
+      properties:
+        message:
+          type: string
+          description: Same encoding as the sign endpoint (OG-05).
+        signature:
+          type: string
+          description: Same encoding as the sign endpoint; must decode to 64 bytes.
+        public_key:
+          type: string
+          description: Verify key to check against.
+    VerifyResponse:
+      type: object
+      required: [valid]
+      properties:
+        valid:
+          type: boolean
+          description: |
+            True when the signature is consistent with message and key. False when
+            the library reports a bad signature. Says nothing about key trust (OG-04).
+    Error:
+      type: object
+      required: [message]
+      description: Provisional error body (OG-12).
+      properties:
+        message:
+          type: string
+  responses:
+    BadRequest:
+      description: Malformed request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Caller not identified (OG-06).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: |
+        The OPA decision was not allow. For a tenant mismatch the policy's deny set
+        contains "cross-tenant access denied".
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            message: cross-tenant access denied
+    TooManyRequests:
+      description: Rate limiter returned allowed = 0 (token bucket empty).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ServiceUnavailable:
+      description: Rate-limit store unavailable on an operation configured fail-closed (OG-09).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
